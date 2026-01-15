@@ -1,0 +1,110 @@
+workflows:
+  ios-unsigned-fix:
+    name: iOS Unsigned (Share Extension Build)
+    max_build_duration: 60
+    instance_type: mac_mini_m1
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    
+    scripts:
+      - name: Clean Build Artifacts
+        script: |
+          # INSTEAD OF DELETING THE PROJECT, WE JUST CLEAN
+          flutter clean
+          rm -rf ios/Pods
+          rm -f ios/Podfile.lock
+
+      - name: Get Flutter packages
+        script: |
+          flutter pub get
+
+      - name: Configure Podfile with Permissions
+        script: |
+          # Overwrite ios/Podfile to ensure iOS 13 and permissions
+          cat <<EOF > ios/Podfile
+          platform :ios, '13.0'
+          ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+          project 'Runner', {
+            'Debug' => :debug,
+            'Profile' => :release,
+            'Release' => :release,
+          }
+
+          def flutter_root
+            generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+            unless File.exist?(generated_xcode_build_settings_path)
+              raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get is executed first"
+            end
+
+            File.foreach(generated_xcode_build_settings_path) do |line|
+              matches = line.match(/FLUTTER_ROOT\=(.*)/)
+              return matches[1].strip if matches
+            end
+            raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Generated.xcconfig, then run flutter pub get"
+          end
+
+          require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+          flutter_ios_podfile_setup
+
+          target 'Runner' do
+            use_frameworks!
+            use_modular_headers!
+
+            flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+            
+            # --- SHARE EXTENSION TARGET ---
+            # This ensures the extension has access to necessary pods if needed
+            target 'ShareExtension' do
+              inherit! :search_paths
+            end
+          end
+
+          post_install do |installer|
+            installer.pods_project.targets.each do |target|
+              flutter_additional_ios_build_settings(target)
+              target.build_configurations.each do |config|
+                config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+                config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= [
+                  '\$(inherited)',
+                  'PERMISSION_CAMERA=1',
+                  'PERMISSION_MICROPHONE=1',
+                  'PERMISSION_PHOTOS=1',
+                  'PERMISSION_APP_TRACKING_TRANSPARENCY=1',
+                  'PERMISSION_BLUETOOTH=1',
+                ]
+              end
+            end
+          end
+          EOF
+
+      - name: Install Pods
+        script: |
+          cd ios
+          pod install
+          cd ..
+
+      - name: Build iOS App (No Codesign)
+        script: |
+          # Build Release without signing
+          flutter build ios --release --no-codesign
+
+      - name: Package as IPA
+        script: |
+          cd build/ios/iphoneos
+          
+          # Create IPA structure
+          mkdir Payload
+          mv Runner.app Payload/
+          
+          # Zip into IPA
+          zip -r -y app_unsigned.ipa Payload/
+          
+          # Export
+          mv app_unsigned.ipa $CM_EXPORT_DIR/runner_unsigned.ipa
+
+    artifacts:
+      - $CM_EXPORT_DIR/*.ipa
