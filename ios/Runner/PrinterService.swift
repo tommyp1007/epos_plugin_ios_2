@@ -393,6 +393,7 @@ extension UIImage {
         return newImage ?? self
     }
     
+    // UPDATED TRIM FUNCTION WITH NOISE FILTER
     func trim() -> UIImage? {
         guard let cgImage = self.cgImage else { return nil }
         
@@ -419,32 +420,52 @@ extension UIImage {
         var minY = height
         var maxY = 0
         var foundContent = false
+        
         let threshold: UInt8 = 240
+        // NOISE FILTER: Minimum number of dark pixels in a row to count as "Content"
+        // This ignores tiny specs of dust or artifacts at the top/bottom of the page
+        let minDarkPixelsPerRow = 10
         
         for y in 0..<height {
+            var darkPixelsInRow = 0
+            var firstDarkX = -1
+            var lastDarkX = -1
+            
+            // 1. Scan the row
             for x in 0..<width {
                 let offset = (y * width + x) * 4
                 let r = rawData[offset]
                 let g = rawData[offset + 1]
                 let b = rawData[offset + 2]
                 
+                // If pixel is dark
                 if r < threshold || g < threshold || b < threshold {
-                    if x < minX { minX = x }
-                    if x > maxX { maxX = x }
-                    if y < minY { minY = y }
-                    if y > maxY { maxY = y }
-                    foundContent = true
+                    darkPixelsInRow += 1
+                    if firstDarkX == -1 { firstDarkX = x }
+                    lastDarkX = x
                 }
+            }
+            
+            // 2. Only consider this row if it has enough content (noise filter)
+            if darkPixelsInRow >= minDarkPixelsPerRow {
+                foundContent = true
+                
+                if y < minY { minY = y }
+                if y > maxY { maxY = y }
+                
+                if firstDarkX != -1 && firstDarkX < minX { minX = firstDarkX }
+                if lastDarkX != -1 && lastDarkX > maxX { maxX = lastDarkX }
             }
         }
         
         if !foundContent { return nil }
         
-        let padding = 5
+        // Add Padding
+        let padding = 10
         minX = max(0, minX - padding)
         maxX = min(width, maxX + padding)
         minY = max(0, minY - padding)
-        maxY = min(height, maxY + padding + 40) // Extra padding for cutter
+        maxY = min(height, maxY + padding + 40) // Bottom padding for cutter
         
         let rect = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
         guard let cropped = cgImage.cropping(to: rect) else { return nil }
